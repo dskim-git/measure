@@ -97,6 +97,7 @@ DEFAULTS = {
     "line_color": "#FF0000",
     "line_width": 2,
     "exif_info": None,
+    "img_rotation": 0,   # 0 / 90 / 180 / 270
 }
 for k, v in DEFAULTS.items():
     if k not in st.session_state:
@@ -262,17 +263,21 @@ with col_up:
         type=["png", "jpg", "jpeg", "bmp", "gif", "tiff", "webp"],
     )
     if uploaded:
-        raw = uploaded.read()
-        img_obj = Image.open(io.BytesIO(raw))
-        st.session_state["exif_info"] = read_exif(img_obj, raw_bytes=raw)
-        if img_obj.mode not in ("RGB", "RGBA"):
-            img_obj = img_obj.convert("RGB")
-        buf = io.BytesIO()
-        img_obj.save(buf, format="PNG")
-        st.session_state["img_data"] = buf.getvalue()
-        st.session_state["img_width_px"] = img_obj.width
-        st.session_state["img_height_px"] = img_obj.height
-        st.session_state["img_mime"] = "image/png"
+        # file_id가 바뀐 경우(=새 파일)에만 처리 — rerun 시 덮어쓰기 방지
+        if uploaded.file_id != st.session_state.get("_last_upload_id"):
+            st.session_state["_last_upload_id"] = uploaded.file_id
+            raw = uploaded.read()
+            img_obj = Image.open(io.BytesIO(raw))
+            st.session_state["exif_info"] = read_exif(img_obj, raw_bytes=raw)
+            st.session_state["img_rotation"] = 0  # 새 파일이면 회전 초기화
+            if img_obj.mode not in ("RGB", "RGBA"):
+                img_obj = img_obj.convert("RGB")
+            buf = io.BytesIO()
+            img_obj.save(buf, format="PNG")
+            st.session_state["img_data"] = buf.getvalue()
+            st.session_state["img_width_px"] = img_obj.width
+            st.session_state["img_height_px"] = img_obj.height
+            st.session_state["img_mime"] = "image/png"
 
 with col_info:
     if st.session_state["img_data"]:
@@ -385,6 +390,31 @@ if st.session_state["img_data"] is None:
     </div>
     """, unsafe_allow_html=True)
 else:
+    # ── 회전 버튼 처리 (캔버스 렌더링 전에 적용) ──
+    rot_col1, rot_col2, _ = st.columns([1, 1, 8])
+    with rot_col1:
+        if st.button("↺ 왼쪽 90°", key="rot_l", disabled=st.session_state["img_data"] is None):
+            img_obj = Image.open(io.BytesIO(st.session_state["img_data"]))
+            img_obj = img_obj.rotate(90, expand=True)
+            buf = io.BytesIO()
+            img_obj.save(buf, format="PNG")
+            st.session_state["img_data"] = buf.getvalue()
+            st.session_state["img_width_px"] = img_obj.width
+            st.session_state["img_height_px"] = img_obj.height
+            st.session_state["img_rotation"] = (st.session_state["img_rotation"] + 90) % 360
+            st.rerun()
+    with rot_col2:
+        if st.button("↻ 오른쪽 90°", key="rot_r", disabled=st.session_state["img_data"] is None):
+            img_obj = Image.open(io.BytesIO(st.session_state["img_data"]))
+            img_obj = img_obj.rotate(-90, expand=True)
+            buf = io.BytesIO()
+            img_obj.save(buf, format="PNG")
+            st.session_state["img_data"] = buf.getvalue()
+            st.session_state["img_width_px"] = img_obj.width
+            st.session_state["img_height_px"] = img_obj.height
+            st.session_state["img_rotation"] = (st.session_state["img_rotation"] - 90) % 360
+            st.rerun()
+
     # 이미지 base64
     img_b64 = base64.b64encode(st.session_state["img_data"]).decode()
     mime = st.session_state["img_mime"]
