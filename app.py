@@ -8,6 +8,8 @@
 import io
 import base64
 import json
+import importlib
+import sys
 import warnings
 import logging
 
@@ -19,7 +21,31 @@ warnings.filterwarnings("ignore", message=".*Please replace.*st\\.iframe.*")
 logging.getLogger("streamlit").setLevel(logging.ERROR)
 
 import streamlit as st
-from PIL import Image, ExifTags
+from PIL import Image, ExifTags, UnidentifiedImageError
+
+_HAS_HEIF = False
+_HEIF_ERR = ""
+
+
+def ensure_heif_support() -> bool:
+  """HEIC/HEIF 디코더 로드 시도. 실패해도 앱이 죽지 않도록 bool로만 반환."""
+  global _HAS_HEIF, _HEIF_ERR
+  if _HAS_HEIF:
+    return True
+  try:
+    _heif_module = importlib.import_module("pillow_heif")
+    _heif_module.register_heif_opener()
+    _HAS_HEIF = True
+    _HEIF_ERR = ""
+    return True
+  except Exception as e:
+    _HAS_HEIF = False
+    _HEIF_ERR = f"{type(e).__name__}: {e}"
+    return False
+
+
+ensure_heif_support()
+
 try:
     import exifread as _exifread
     _HAS_EXIFREAD = True
@@ -259,25 +285,40 @@ def read_exif(img_obj: Image.Image, raw_bytes: bytes = None) -> dict:
 col_up, col_info = st.columns([4, 6])
 with col_up:
     uploaded = st.file_uploader(
-        "🖼️ 이미지 파일 선택 (PNG·JPG·BMP·GIF·TIFF·WEBP)",
-        type=["png", "jpg", "jpeg", "bmp", "gif", "tiff", "webp"],
+        "🖼️ 이미지 파일 선택 (PNG·JPG·BMP·GIF·TIFF·WEBP·HEIC)",
+        type=["png", "jpg", "jpeg", "bmp", "gif", "tiff", "webp", "heic", "heif"],
     )
     if uploaded:
         # file_id가 바뀐 경우(=새 파일)에만 처리 — rerun 시 덮어쓰기 방지
         if uploaded.file_id != st.session_state.get("_last_upload_id"):
-            st.session_state["_last_upload_id"] = uploaded.file_id
+            ext = (uploaded.name.rsplit(".", 1)[-1].lower() if "." in uploaded.name else "")
+            if ext in ("heic", "heif"):
+                ensure_heif_support()
             raw = uploaded.read()
-            img_obj = Image.open(io.BytesIO(raw))
-            st.session_state["exif_info"] = read_exif(img_obj, raw_bytes=raw)
-            st.session_state["img_rotation"] = 0  # 새 파일이면 회전 초기화
-            if img_obj.mode not in ("RGB", "RGBA"):
-                img_obj = img_obj.convert("RGB")
-            buf = io.BytesIO()
-            img_obj.save(buf, format="PNG")
-            st.session_state["img_data"] = buf.getvalue()
-            st.session_state["img_width_px"] = img_obj.width
-            st.session_state["img_height_px"] = img_obj.height
-            st.session_state["img_mime"] = "image/png"
+            try:
+                img_obj = Image.open(io.BytesIO(raw))
+                st.session_state["exif_info"] = read_exif(img_obj, raw_bytes=raw)
+                st.session_state["img_rotation"] = 0  # 새 파일이면 회전 초기화
+                if img_obj.mode not in ("RGB", "RGBA"):
+                    img_obj = img_obj.convert("RGB")
+                buf = io.BytesIO()
+                img_obj.save(buf, format="PNG")
+                st.session_state["img_data"] = buf.getvalue()
+                st.session_state["img_width_px"] = img_obj.width
+                st.session_state["img_height_px"] = img_obj.height
+                st.session_state["img_mime"] = "image/png"
+                st.session_state["_last_upload_id"] = uploaded.file_id
+            except UnidentifiedImageError:
+                st.session_state.pop("_last_upload_id", None)
+                if ext in ("heic", "heif") and not _HAS_HEIF:
+                    st.error(
+                        "HEIC/HEIF 디코더가 로드되지 않았습니다. "
+                        f"현재 앱 Python: {sys.executable} | "
+                        "이 인터프리터로 python -m pip install pillow-heif 설치 후 앱을 재시작해 주세요. "
+                        f"(상세: {_HEIF_ERR or 'n/a'})"
+                    )
+                else:
+                    st.error("이미지 파일을 인식할 수 없습니다. 파일이 손상되었거나 지원되지 않는 형식일 수 있습니다.")
 
 with col_info:
     if st.session_state["img_data"]:
@@ -379,7 +420,7 @@ if st.session_state["img_data"] is None:
         <div style="font-size:56px;">🖼️</div>
         <div style="font-weight:bold;font-size:22px;color:#222;">이미지를 업로드하세요</div>
         <div style="font-size:14px;color:#777;">위쪽 파일 선택 버튼에서 이미지를 선택하세요</div>
-        <div style="font-size:12px;color:#aaa;">PNG · JPG · BMP · GIF · TIFF · WEBP 지원</div>
+        <div style="font-size:12px;color:#aaa;">PNG · JPG · BMP · GIF · TIFF · WEBP · HEIC 지원</div>
         <hr style="width:80%;border-color:#ddd;">
         <div style="font-size:13px;color:#555;text-align:center;line-height:1.8;">
           ① 이미지 업로드 &nbsp;→&nbsp; ② 선 측정 도구로 두 점 클릭<br>
